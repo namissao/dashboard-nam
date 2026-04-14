@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Nossa Agência Missionária</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=Merriweather:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs, doc, updateDoc, deleteDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+
+// ════════════════════════════════════════════════════
+// ▶ SUBSTITUA PELOS SEUS DADOS DO FIREBASE (PASSO 5)
+// ════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyBmwXsyYsMBw8OlruOO8bhFy-KNRBylGEc",
+  authDomain: "nam-relatorios.firebaseapp.com",
+  projectId: "nam-relatorios",
+  storageBucket: "nam-relatorios.firebasestorage.app",
+  messagingSenderId: "761657782319",
+  appId: "1:761657782319:web:ffd6ff79dc05392aeed6da"
+};
+// ════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════
+// ▶ LISTA DE TODOS OS CAMPOS (para detectar quem não enviou)
+// ════════════════════════════════════════════════════
+const TODOS_CAMPOS = [
+  "Rio Juruá — AM (Envirá)",
+  "Rio Purus — AM (Lago Mamoriá)",
+  "Rio Purus — AM (Maraã)",
+  "Rio Purus — AM (Comunidades)",
+  "Rio Negro / Rio Unini — AM",
+  "Rio Purus — AM (Comunidades)",
+  "Costa Rica",
+  "Rio Purus — AM (Comunidades)",
+  "Moçambique",
+  "Nordeste — Natal/RN",
+  "Rio Juruá — AM (ipixuna)",
+];
+// ════════════════════════════════════════════════════
+
+const MESES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
+
+let todosRelatorios = [];
+let relatorioAtual  = null;
+let aiReportText    = '';
+
+// ──────────────────────────────────
+// AUTH — Firebase email/senha real
+// ──────────────────────────────────
+onAuthStateChanged(auth, user => {
+  if (user) {
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('dash').style.display = 'block';
+    document.getElementById('user-email').textContent = user.email;
+    carregarRelatorios();
+  } else {
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('dash').style.display = 'none';
+  }
+});
+
+window._login = async function() {
+  const email = document.getElementById('l-email').value.trim();
+  const senha = document.getElementById('l-senha').value;
+  const btn   = document.getElementById('btn-login');
+  const err   = document.getElementById('login-erro');
+  if (!email || !senha) { err.textContent = 'Preencha e-mail e senha.'; err.style.display = 'block'; return; }
+  btn.disabled = true;
+  btn.textContent = 'Entrando...';
+  err.style.display = 'none';
+  try {
+    await signInWithEmailAndPassword(auth, email, senha);
+  } catch(e) {
+    const msgs = {
+      'auth/user-not-found': 'E-mail não cadastrado.',
+      'auth/wrong-password': 'Senha incorreta.',
+      'auth/invalid-credential': 'E-mail ou senha incorretos.',
+      'auth/too-many-requests': 'Muitas tentativas. Aguarde alguns minutos.',
+    };
+    err.textContent = msgs[e.code] || 'Erro ao entrar. Tente novamente.';
+    err.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Entrar no Dashboard';
+  }
+};
+
+window._logout = async function() {
+  if (confirm('Deseja sair do dashboard?')) await signOut(auth);
+};
+
+window._esqueceuSenha = async function() {
+  const email = document.getElementById('l-email').value.trim();
+  if (!email) { alert('Digite seu e-mail primeiro.'); return; }
+  try {
+    await sendPasswordResetEmail(auth, email);
+    alert('E-mail de recuperação enviado para ' + email);
+  } catch(e) {
+    alert('Erro ao enviar e-mail: ' + e.message);
+  }
+};
+
+// ──────────────────────────────────
+// CARREGAR DADOS
+// ──────────────────────────────────
+async function carregarRelatorios() {
+  document.getElementById('loading').style.display = 'flex';
+  try {
+    const snap = await getDocs(collection(db, "relatorios"));
+    todosRelatorios = [];
+    snap.forEach(d => todosRelatorios.push({ id: d.id, ...d.data() }));
+    todosRelatorios.sort((a, b) => (b.mes_ano_num || 0) - (a.mes_ano_num || 0));
+    window._relatorios = todosRelatorios;
+    renderDashboard();
+  } catch(e) {
+    alert('Erro ao carregar: ' + e.message);
+  }
+  document.getElementById('loading').style.display = 'none';
+}
+
+// ──────────────────────────────────
+// RENDER DASHBOARD
+// ──────────────────────────────────
+function getMesFiltro() {
+  const m = document.getElementById('f-mes').value;
+  const a = document.getElementById('f-ano').value;
+  return (m && a) ? m + ' ' + a : null;
+}
+
+function renderDashboard() {
+  const mesFiltro  = getMesFiltro();
+  const campoBusca = (document.getElementById('f-busca').value || '').toLowerCase();
+  const statusFiltro = document.getElementById('f-status').value;
+
+  let lista = mesFiltro ? todosRelatorios.filter(r => r.mes_referencia === mesFiltro) : todosRelatorios;
+  if (campoBusca) lista = lista.filter(r => (r.campo || '').toLowerCase().includes(campoBusca) || (r.missionario_nome || '').toLowerCase().includes(campoBusca));
+  if (statusFiltro) lista = lista.filter(r => (r.status || 'pendente_revisao') === statusFiltro);
+
+  // Stats
+  const camposEnviados = mesFiltro ? todosRelatorios.filter(r => r.mes_referencia === mesFiltro).map(r => r.campo) : [];
+  const faltando = mesFiltro ? TODOS_CAMPOS.filter(c => !camposEnviados.includes(c)) : [];
+  const totalBatismos = lista.reduce((s, r) => s + (parseInt(r.batismos) || 0), 0);
+  const totalAlcancadas = lista.reduce((s, r) => s + (parseInt(r.pessoas_alcancadas) || 0), 0);
+
+  document.getElementById('st-total').textContent = lista.length;
+  document.getElementById('st-pendentes').textContent = lista.filter(r => (r.status||'pendente_revisao') === 'pendente_revisao').length;
+  document.getElementById('st-aprovados').textContent = lista.filter(r => r.status === 'aprovado' || r.status === 'enviado').length;
+  document.getElementById('st-faltando').textContent = faltando.length;
+  document.getElementById('st-batismos').textContent = totalBatismos;
+  document.getElementById('st-alcancadas').textContent = totalAlcancadas;
+
+  // Faltando
+  const faltEl = document.getElementById('faltando-wrap');
+  if (mesFiltro) {
+    faltEl.style.display = 'block';
+    if (faltando.length === 0) {
+      faltEl.innerHTML = `<div class="faltando-ok">✅ Todos os campos enviaram o relatório de ${mesFiltro}!</div>`;
+    } else {
+      faltEl.innerHTML = `<div class="faltando-titulo">⚠️ Ainda não enviaram em ${mesFiltro}:</div>` +
+        faltando.map(c => `<span class="tag-faltando">${c}</span>`).join('');
+    }
+  } else {
+    faltEl.style.display = 'none';
+  }
+
+  // Lista de relatórios
+  const listaEl = document.getElementById('lista-relatorios');
+  if (lista.length === 0) {
+    listaEl.innerHTML = `<div class="empty"><div style="font-size:48px;margin-bottom:12px;">📭</div><p>Nenhum relatório encontrado${mesFiltro ? ' para '+mesFiltro : ''}.</p></div>`;
+    return;
+  }
+
+  listaEl.innerHTML = lista.map(r => {
+    const st = r.status || 'pendente_revisao';
+    const stLabels = { pendente_revisao:'⏳ Aguardando revisão', em_edicao:'✏️ Em edição', aprovado:'✅ Aprovado', enviado:'📤 Enviado' };
+    const stColors = { pendente_revisao:'#E67E22', em_edicao:'#2980B9', aprovado:'#01974B', enviado:'#6C3483' };
+    const hasAI = r.relatorio_editado ? '✨' : '';
+    return `
+    <div class="rel-card" onclick="window._abrirRelatorio('${r.id}')">
+      <div class="rel-top">
+        <div>
+          <div class="rel-nome">${r.missionario_nome || '—'}</div>
+          <div class="rel-campo">${r.campo}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+          <span class="badge-mes">${r.mes_referencia || '—'}</span>
+          <span class="badge-status" style="background:${stColors[st]}20;color:${stColors[st]};border:1px solid ${stColors[st]}40;">${stLabels[st]}</span>
+        </div>
+      </div>
+      <div class="rel-preview">${(r.resumo_geral || '').substring(0,140)}${(r.resumo_geral||'').length>140?'...':''}</div>
+      <div class="rel-footer">
+        <span>👥 ${r.pessoas_alcancadas||0} pessoas</span>
+        <span>💧 ${r.batismos||0} batismos</span>
+        <span>📷 ${(r.fotos||[]).length} fotos</span>
+        ${hasAI ? '<span style="color:#6C3483;font-weight:700;">✨ IA pronto</span>' : ''}
+        <span class="rel-data">${fmtData(r.criado_em)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.aplicarFiltro = renderDashboard;
+window.limparFiltro = function() {
+  document.getElementById('f-mes').value = '';
+  document.getElementById('f-ano').value = '';
+  document.getElementById('f-busca').value = '';
+  document.getElementById('f-status').value = '';
+  renderDashboard();
+};
+window.recarregar = carregarRelatorios;
+
+// ──────────────────────────────────
+// MODAL — VER RELATÓRIO
+// ──────────────────────────────────
+window._abrirRelatorio = function(id) {
+  relatorioAtual = todosRelatorios.find(r => r.id === id);
+  if (!relatorioAtual) return;
+  renderModal(relatorioAtual);
+  document.getElementById('modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+};
+
+function renderModal(r) {
+  const st = r.status || 'pendente_revisao';
+  document.getElementById('modal-nome').textContent = r.missionario_nome || r.campo;
+  document.getElementById('modal-mesref').textContent = r.mes_referencia;
+  document.getElementById('modal-status-sel').value = st;
+
+  // Aba bruto
+  const campos = [
+    { l: 'Missionário', v: r.missionario_nome },
+    { l: 'Campo', v: r.campo },
+    { l: 'Mês de Referência', v: r.mes_referencia },
+    { l: 'Resumo Geral do Mês', v: r.resumo_geral },
+    { l: 'Pessoas alcançadas', v: r.pessoas_alcancadas },
+    { l: 'Batismos', v: r.batismos || 0 },
+    { l: 'Houve decisões?', v: r.houve_decisoes === 'sim' ? 'Sim' : 'Não' },
+    { l: 'Detalhe das decisões', v: r.detalhe_decisoes || '—' },
+    { l: 'Discipulado', v: r.discipulado },
+    { l: 'Crianças e Jovens', v: r.criancas_jovens || '(não informado)' },
+    { l: 'Desafios', v: r.desafios },
+    { l: 'Frutos e Destaques', v: r.frutos_destaques },
+    { l: 'Pedidos de Oração', v: r.pedidos_oracao },
+    { l: 'Necessidades Práticas', v: r.necessidades || '(não informado)' },
+    { l: 'Enviado em', v: fmtData(r.criado_em) },
+  ];
+  document.getElementById('tab-bruto').innerHTML = `<div class="campos-brutos">` +
+    campos.map(c => `<div class="campo-bruto"><div class="cb-label">${c.l}</div><div class="cb-val">${c.v || '—'}</div></div>`).join('') +
+    `</div>`;
+
+  // Aba fotos — URLs do Google Drive (qualidade original)
+  const fotos = r.fotos || [];
+  const fotosOk = fotos.filter(f => f && f.url);
+  const fotosErro = fotos.filter(f => f && f.erro);
+  document.getElementById('tab-fotos-btn').textContent = `📷 Fotos (${fotos.length})`;
+
+  if (fotos.length === 0) {
+    document.getElementById('tab-fotos').innerHTML = '<div class="empty" style="padding:2rem;">Nenhuma foto enviada.</div>';
+  } else {
+    // Converte URL do Drive para embed de preview
+    function drivePreview(url) {
+      // URL format: https://drive.google.com/file/d/FILE_ID/view
+      const m = url && url.match(/\/d\/([^/]+)/);
+      if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w400`;
+      return url;
+    }
+    function driveOpen(url) {
+      const m = url && url.match(/\/d\/([^/]+)/);
+      if (m) return `https://drive.google.com/file/d/${m[1]}/view`;
+      return url;
+    }
+
+    let html = `<div class="fotos-grid">`;
+    fotosOk.forEach((f, i) => {
+      html += `<a href="${driveOpen(f.url)}" target="_blank" class="foto-item">
+        <img src="${drivePreview(f.url)}" alt="${f.nome||'Foto '+(i+1)}" loading="lazy" onerror="this.parentElement.querySelector('.foto-num').textContent='📷 '+this.alt; this.style.display='none'">
+        <span class="foto-num">🔗 ${f.nome||'Foto '+(i+1)}</span>
+      </a>`;
+    });
+    html += `</div>`;
+
+    if (fotosErro.length > 0) {
+      html += `<div style="margin-top:10px;padding:10px 14px;background:#FFF4EA;border-radius:8px;font-size:12px;color:#A04000;">
+        ⚠️ ${fotosErro.length} foto(s) com erro no envio: ${fotosErro.map(f=>f.nome).join(', ')}
+      </div>`;
+    }
+
+    html += `<div style="margin-top:10px;font-size:12px;color:#3A5A7A;padding:0 4px;">
+      Clique em cada foto para abrir em qualidade original no Google Drive.
+    </div>`;
+
+    document.getElementById('tab-fotos').innerHTML = html;
+  }
+
+  // Aba IA
+  const hasAI = !!r.relatorio_editado;
+  document.getElementById('tab-ia').innerHTML = hasAI
+    ? `<div class="ai-text-ready">${r.relatorio_editado.replace(/\n/g,'<br>')}</div><div class="ai-actions-bar"><button class="btn-ai-copy" onclick="copiarTextoIA()">📋 Copiar</button><button class="btn-ai-pdf" onclick="gerarPDF('${r.id}')">📄 Baixar PDF</button><button class="btn-ai-regen" onclick="gerarRelatorioIA('${r.id}')">🔄 Regenerar</button></div>`
+    : `<div class="ai-placeholder"><div style="font-size:48px;margin-bottom:16px;">✨</div><p>O relatório editado com a linguagem da NAM ainda não foi gerado.</p><button class="btn-gerar-ia" onclick="gerarRelatorioIA('${r.id}')">✨ Gerar Relatório Editado com IA</button></div>`;
+
+  switchTab('bruto');
+}
+
+window.switchTab = function(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('tbtn-' + tab).classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+};
+
+window.fecharModal = function() {
+  document.getElementById('modal').style.display = 'none';
+  document.body.style.overflow = '';
+};
+
+window.atualizarStatus = async function() {
+  if (!relatorioAtual) return;
+  const status = document.getElementById('modal-status-sel').value;
+  try {
+    await updateDoc(doc(db, "relatorios", relatorioAtual.id), { status });
+    const idx = todosRelatorios.findIndex(r => r.id === relatorioAtual.id);
+    if (idx >= 0) todosRelatorios[idx].status = status;
+    renderDashboard();
+    showToast('Status atualizado!');
+  } catch(e) { alert('Erro: ' + e.message); }
+};
+
+window.excluirRelatorio = async function() {
+  if (!relatorioAtual) return;
+  if (!confirm('Tem certeza que deseja excluir permanentemente este relatório?')) return;
+  try {
+    await deleteDoc(doc(db, "relatorios", relatorioAtual.id));
+    todosRelatorios = todosRelatorios.filter(r => r.id !== relatorioAtual.id);
+    fecharModal();
+    renderDashboard();
+    showToast('Relatório excluído.');
+  } catch(e) { alert('Erro: ' + e.message); }
+};
+
+// ──────────────────────────────────
+// IA — GERAR RELATÓRIO EDITADO
+// ──────────────────────────────────
+window.gerarRelatorioIA = async function(id) {
+  const r = todosRelatorios.find(x => x.id === id) || relatorioAtual;
+  if (!r) return;
+
+  document.getElementById('tab-ia').innerHTML = `<div class="ai-loading"><div class="spinner"></div><span>Gerando com a linguagem da Nossa Agência Missionária...</span></div>`;
+
+  const prompt = `Você é o redator da Nossa Agência Missionária, agência missionária brasileira com presença na Amazônia, Nordeste, Europa e África. Transforme o relatório bruto abaixo em texto editorial para enviar às igrejas parceiras.
+
+DADOS DO RELATÓRIO:
+- Missionário: ${r.missionario_nome || r.campo}
+- Campo: ${r.campo}
+- Mês: ${r.mes_referencia}
+- Resumo geral: ${r.resumo_geral}
+- Pessoas alcançadas: ${r.pessoas_alcancadas || 0}
+- Batismos: ${r.batismos || 0}
+- Decisões: ${r.houve_decisoes === 'sim' ? 'Sim — ' + (r.detalhe_decisoes || '') : 'Não houve este mês'}
+- Discipulado: ${r.discipulado}
+- Crianças/Jovens: ${r.criancas_jovens || 'Sem ações específicas'}
+- Desafios: ${r.desafios}
+- Frutos e destaque: ${r.frutos_destaques}
+- Pedidos de oração: ${r.pedidos_oracao}
+- Necessidades: ${r.necessidades || 'Nenhuma urgente'}
+
+INSTRUÇÕES:
+1. Escreva em terceira pessoa: "O casal X...", "O missionário Y...", "A equipe de..."
+2. Tom: caloroso, pastoral, esperançoso — nunca genérico
+3. Mencione Deus e a ação do Espírito naturalmente, como parte da narrativa
+4. Destaque os números (batismos, pessoas alcançadas) com gratidão
+5. Desafios: relate com fé, não com desânimo
+6. Máximo 450 palavras
+7. Termine com parágrafo de pedidos de oração
+8. Não use títulos nem subtítulos — texto corrido
+9. Comece com o nome do missionário/campo em destaque na primeira linha
+
+Escreva APENAS o texto do relatório.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+    const data = await res.json();
+    aiReportText = data.content?.map(c => c.text || '').join('') || gerarTemplateManual(r);
+  } catch {
+    aiReportText = gerarTemplateManual(r);
+  }
+
+  // Salvar no Firestore
+  try {
+    await updateDoc(doc(db, "relatorios", r.id), { relatorio_editado: aiReportText });
+    const idx = todosRelatorios.findIndex(x => x.id === r.id);
+    if (idx >= 0) todosRelatorios[idx].relatorio_editado = aiReportText;
+    relatorioAtual = todosRelatorios[idx] || relatorioAtual;
+  } catch {}
+
+  document.getElementById('tab-ia').innerHTML = `
+    <div class="ai-text-ready">${aiReportText.replace(/\n/g,'<br>')}</div>
+    <div class="ai-actions-bar">
+      <button class="btn-ai-copy" onclick="copiarTextoIA()">📋 Copiar</button>
+      <button class="btn-ai-pdf" onclick="gerarPDF('${r.id}')">📄 Baixar PDF</button>
+      <button class="btn-ai-regen" onclick="gerarRelatorioIA('${r.id}')">🔄 Regenerar</button>
+    </div>`;
+};
+
+function gerarTemplateManual(r) {
+  const dec = r.houve_decisoes === 'sim' && r.detalhe_decisoes
+    ? `\n\nUm dos momentos mais preciosos de ${r.mes_referencia} foi celebrar novas vidas entregues ao Senhor: ${r.detalhe_decisoes}. Cada decisão é fruto de meses de presença fiel, oração e discipulado no campo.`
+    : '';
+
+  return `${r.missionario_nome || r.campo} — ${r.campo}
+Relatório de ${r.mes_referencia}
+
+Em ${r.mes_referencia}, o trabalho em ${r.campo} avançou com a fidelidade que marca a missão que Deus colocou no coração dessa equipe. ${r.resumo_geral}
+${dec}
+
+No discipulado, ${r.discipulado}
+
+Mesmo diante dos desafios do mês — ${r.desafios} — a graça do Senhor sustentou cada passo. O maior fruto foi: ${r.frutos_destaques}
+
+PEDIDOS DE ORAÇÃO
+
+${r.pedidos_oracao}
+
+Obrigado por caminhar conosco nesta missão. Cada oração e cada oferta tornaram possível que o Evangelho chegasse a lugares onde antes não chegava.
+
+— Equipe Nossa Agência Missionária`;
+}
+
+window.copiarTextoIA = function() {
+  const el = document.querySelector('.ai-text-ready');
+  if (!el) return;
+  navigator.clipboard.writeText(el.innerText).then(() => showToast('Texto copiado!'));
+};
+
+// ──────────────────────────────────
+// PDF — jsPDF com visual NAM
+// ──────────────────────────────────
+window.gerarPDF = function(id) {
+  const r = todosRelatorios.find(x => x.id === id) || relatorioAtual;
+  if (!r || !r.relatorio_editado) { alert('Gere o relatório editado primeiro.'); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W = 210, M = 18;
+  let y = 0;
+
+  const AZUL_ESC = [2, 24, 47];
+  const AZUL     = [0, 68, 179];
+  const VERDE    = [1, 151, 75];
+  const BRANCO   = [255, 255, 255];
+  const CINZA    = [244, 247, 255];
+  const SOFT     = [58, 90, 122];
+  const TEXTO    = [20, 30, 50];
+
+  function addRodape() {
+    doc.setFillColor(...AZUL_ESC); doc.rect(0, 283, W, 14, 'F');
+    doc.setFillColor(...AZUL); doc.rect(0, 282, W, 1.5, 'F');
+    doc.setFillColor(...VERDE); doc.rect(0, 280.5, W, 1.5, 'F');
+    doc.setTextColor(126, 184, 255); doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+    doc.text('Nossa Agência Missionária  |  Relatório Mensal de Campo  |  Documento interno — equipe de comunicação', W/2, 290, { align: 'center' });
+  }
+
+  function checkPage(needed) {
+    if (y + needed > 275) {
+      doc.addPage();
+      doc.setFillColor(...CINZA); doc.rect(0, 0, W, 297, 'F');
+      addRodape();
+      y = 20;
+    }
+  }
+
+  function addText(text, x, yPos, maxW, fs, color, style) {
+    doc.setFontSize(fs);
+    doc.setTextColor(...color);
+    doc.setFont('helvetica', style || 'normal');
+    const lines = doc.splitTextToSize(String(text || ''), maxW);
+    doc.text(lines, x, yPos);
+    return yPos + lines.length * (fs * 0.38) + 2;
+  }
+
+  // Fundo geral
+  doc.setFillColor(...CINZA); doc.rect(0, 0, W, 297, 'F');
+
+  // Header
+  doc.setFillColor(...AZUL_ESC); doc.rect(0, 0, W, 62, 'F');
+  doc.setFillColor(...AZUL); doc.rect(0, 59, W, 1.8, 'F');
+  doc.setFillColor(...VERDE); doc.rect(0, 60.8, W, 1.8, 'F');
+
+  doc.setTextColor(...BRANCO);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(17);
+  doc.text('NOSSA AGÊNCIA MISSIONÁRIA', W/2, 18, { align: 'center' });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  doc.setTextColor(126, 184, 255);
+  doc.text('RELATÓRIO MENSAL DE CAMPO', W/2, 26, { align: 'center' });
+
+  // Campo e mês
+  doc.setFillColor(0, 40, 110, 0.7); doc.rect(M-2, 32, W-M*2+4, 22, 'F');
+  doc.setTextColor(...BRANCO);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+  const campoTxt = (r.missionario_nome || '') + (r.missionario_nome ? ' — ' : '') + r.campo;
+  doc.text(campoTxt, W/2, 41, { align: 'center', maxWidth: W - M*2 });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(190, 220, 255);
+  doc.text(r.mes_referencia + '  |  Gerado em ' + new Date().toLocaleDateString('pt-BR'), W/2, 49, { align: 'center' });
+
+  addRodape();
+  y = 72;
+
+  // ── Texto editado ──
+  const linhas = r.relatorio_editado.split('\n');
+  for (let i = 0; i < linhas.length; i++) {
+    const linha = linhas[i];
+    if (i === 0) {
+      // Primeira linha = título do campo
+      checkPage(14);
+      doc.setFillColor(...AZUL); doc.rect(M-2, y-5, W-M*2+4, 10, 'F');
+      doc.setTextColor(...BRANCO); doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+      const l = doc.splitTextToSize(linha, W-M*2);
+      doc.text(l, W/2, y+1, { align: 'center' });
+      y += 13;
+    } else if (linha.trim() === 'PEDIDOS DE ORAÇÃO') {
+      // Separador seção
+      checkPage(16);
+      y += 4;
+      doc.setFillColor(...VERDE); doc.rect(M-2, y-4, W-M*2+4, 9, 'F');
+      doc.setTextColor(...BRANCO); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+      doc.text('PEDIDOS DE ORAÇÃO', W/2, y+1, { align: 'center' });
+      y += 12;
+    } else if (linha.trim() === '') {
+      y += 4;
+    } else {
+      checkPage(12);
+      y = addText(linha, M, y, W-M*2, 10, TEXTO, 'normal');
+    }
+  }
+
+  // ── Rodapé de destaque ──
+  y += 6;
+  checkPage(28);
+  doc.setFillColor(240, 245, 255); doc.roundedRect(M-2, y, W-M*2+4, 22, 3, 3, 'F');
+  doc.setDrawColor(...AZUL); doc.setLineWidth(0.5); doc.roundedRect(M-2, y, W-M*2+4, 22, 3, 3, 'S');
+  doc.setTextColor(...SOFT); doc.setFont('helvetica', 'italic'); doc.setFontSize(9);
+  doc.text('"A missão avança quando a igreja entende que Deus usa diferentes funções para cumprir um único propósito."', W/2, y+8, { align: 'center', maxWidth: W-M*2 });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...SOFT);
+  doc.text('— Informativo Geral NAM 2025', W/2, y+16, { align: 'center' });
+
+  const filename = `Relatorio_${(r.missionario_nome || r.campo).replace(/[^a-zA-Z0-9]/g,'_')}_${(r.mes_referencia||'').replace(' ','_')}.pdf`;
+  doc.save(filename);
+};
+
+// ──────────────────────────────────
+// UTILS
+// ──────────────────────────────────
+function fmtData(ts) {
+  if (!ts) return '—';
+  try {
+    const d = ts.toDate ? ts.toDate() : new Date((ts.seconds||0)*1000);
+    return d.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+  } catch { return '—'; }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Enter key no login
+  document.getElementById('l-senha').addEventListener('keydown', e => { if (e.key === 'Enter') window._login(); });
+  document.getElementById('l-email').addEventListener('keydown', e => { if (e.key === 'Enter') window._login(); });
+});
+</script>
+
+<style>
+:root {
+  --blue:#0044B3; --blue-dark:#02182F; --blue-mid:#1a4fa8;
+  --green:#01974B; --green-dark:#017A3D;
+  --white:#fff; --off:#F4F7FF; --text:#02182F; --soft:#3A5A7A;
+  --border:#C8D8F0; --red:#C0392B; --orange:#E67E22;
+  --shadow:0 2px 16px rgba(2,24,47,0.10);
+  --shadow-lg:0 4px 28px rgba(2,24,47,0.16);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Montserrat', sans-serif; background: var(--off); color: var(--text); min-height: 100vh; }
+
+/* ─── LOGIN ─── */
+#login-screen {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; background: var(--blue-dark);
+  padding: 2rem;
+}
+.login-box {
+  background: white; border-radius: 20px;
+  padding: 40px 36px; max-width: 400px; width: 100%;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.35);
+  text-align: center;
+}
+.login-logo { font-size: 48px; margin-bottom: 8px; display: block; }
+.login-box h1 { font-family: 'Merriweather', serif; font-size: 20px; color: var(--blue-dark); margin-bottom: 6px; }
+.login-box p { font-size: 13px; color: var(--soft); margin-bottom: 28px; line-height: 1.5; }
+.login-field { margin-bottom: 14px; text-align: left; }
+.login-field label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--soft); display: block; margin-bottom: 6px; }
+.login-field input {
+  width: 100%; padding: 12px 14px;
+  border: 2px solid var(--border); border-radius: 10px;
+  font-size: 14px; font-family: 'Montserrat', sans-serif;
+  color: var(--text); background: var(--off); outline: none;
+  transition: border-color 0.2s;
+}
+.login-field input:focus { border-color: var(--blue); background: white; }
+.campo-erro { border-color: var(--red) !important; }
+#login-erro { display:none; background:#FFF0EE; border:1px solid var(--red); border-radius:8px; padding:10px 14px; font-size:12px; color:var(--red); font-weight:600; margin-bottom:14px; }
+.btn-login {
+  width: 100%; padding: 14px;
+  background: linear-gradient(135deg, var(--blue-dark), var(--blue));
+  color: white; border: none; border-radius: 10px;
+  font-size: 15px; font-weight: 700; font-family: 'Montserrat', sans-serif;
+  cursor: pointer; box-shadow: 0 4px 18px rgba(0,68,179,0.3);
+  transition: all 0.2s; margin-top: 4px;
+}
+.btn-login:hover { transform: translateY(-1px); }
+.btn-login:disabled { background: #94A8C8; cursor: not-allowed; transform: none; }
+.login-extra { display:flex; justify-content:space-between; margin-top:12px; font-size:12px; }
+.login-extra a { color: var(--blue); cursor:pointer; text-decoration:none; font-weight:600; }
+.login-extra a:hover { text-decoration:underline; }
+.login-aviso { font-size:11px; color:var(--soft); margin-top:20px; line-height:1.5; background:var(--off); border-radius:8px; padding:10px 12px; }
+
+/* ─── TOPBAR ─── */
+.topbar {
+  background: var(--blue-dark); color: white;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; height: 56px; position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
+}
+.topbar-logo { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:700; }
+.topbar-logo-icon { width:32px; height:32px; background:var(--blue); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; }
+.topbar-user { display:flex; align-items:center; gap:12px; }
+.topbar-email { font-size:12px; color:#7EB8FF; }
+.btn-logout { background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); color:white; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; transition:0.15s; font-family:'Montserrat',sans-serif; }
+.btn-logout:hover { background:rgba(255,255,255,0.2); }
+
+/* ─── LOADING ─── */
+#loading {
+  display:none; position:fixed; inset:0; background:rgba(2,24,47,0.5);
+  z-index:500; align-items:center; justify-content:center;
+  flex-direction:column; gap:16px;
+}
+.spinner-lg { width:48px; height:48px; border:4px solid rgba(255,255,255,0.2); border-top-color:white; border-radius:50%; animation:spin 0.7s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* ─── DASHBOARD BODY ─── */
+.dash-body { max-width: 1100px; margin: 0 auto; padding: 24px 16px 80px; }
+
+/* STATS */
+.stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:24px; }
+.stat-card { background:white; border-radius:14px; padding:16px 18px; box-shadow:var(--shadow); border-top:4px solid var(--border); }
+.stat-card.blue { border-top-color:var(--blue); }
+.stat-card.green { border-top-color:var(--green); }
+.stat-card.orange { border-top-color:var(--orange); }
+.stat-card.red { border-top-color:var(--red); }
+.stat-card.purple { border-top-color:#6C3483; }
+.stat-lbl { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--soft); margin-bottom:8px; }
+.stat-val { font-size:28px; font-weight:800; color:var(--blue-dark); line-height:1; margin-bottom:4px; }
+.stat-card.green .stat-val { color:var(--green-dark); }
+.stat-card.orange .stat-val { color:var(--orange); }
+.stat-card.red .stat-val { color:var(--red); }
+.stat-card.purple .stat-val { color:#6C3483; }
+
+/* FALTANDO */
+#faltando-wrap { background:white; border-radius:14px; padding:16px 18px; margin-bottom:20px; box-shadow:var(--shadow); border-left:5px solid var(--orange); }
+.faltando-titulo { font-size:13px; font-weight:700; color:var(--orange); margin-bottom:10px; }
+.tag-faltando { display:inline-block; background:#FFF4EA; border:1px solid #F0C080; color:#A04000; border-radius:20px; padding:4px 12px; font-size:12px; font-weight:600; margin:3px; }
+.faltando-ok { font-size:14px; font-weight:700; color:var(--green-dark); }
+
+/* FILTROS */
+.filtros { background:white; border-radius:14px; padding:16px 18px; margin-bottom:20px; box-shadow:var(--shadow); display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+.filtros-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--soft); }
+.f-sel { padding:8px 12px; border:1.5px solid var(--border); border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; color:var(--text); background:var(--off); outline:none; cursor:pointer; }
+.f-sel:focus { border-color:var(--blue); background:white; }
+.f-search { flex:1; min-width:180px; padding:8px 12px; border:1.5px solid var(--border); border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; background:var(--off); outline:none; }
+.f-search:focus { border-color:var(--blue); background:white; }
+.btn-filtrar { background:var(--blue); color:white; border:none; padding:8px 16px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; font-weight:700; cursor:pointer; transition:0.15s; }
+.btn-filtrar:hover { background:var(--blue-dark); }
+.btn-limpar { background:var(--off); color:var(--soft); border:1.5px solid var(--border); padding:8px 14px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; cursor:pointer; }
+.btn-reload { background:var(--off); color:var(--soft); border:1.5px solid var(--border); padding:8px 12px; border-radius:8px; font-size:13px; cursor:pointer; }
+.btn-reload:hover { background:var(--border); }
+
+/* LISTA */
+#lista-relatorios { display:flex; flex-direction:column; gap:12px; }
+.rel-card {
+  background:white; border-radius:14px; padding:18px 20px;
+  box-shadow:var(--shadow); cursor:pointer;
+  border-left:5px solid var(--border); transition:all 0.15s;
+}
+.rel-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-lg); border-left-color:var(--blue); }
+.rel-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; flex-wrap:wrap; gap:8px; }
+.rel-nome { font-size:15px; font-weight:700; color:var(--blue-dark); }
+.rel-campo { font-size:12px; color:var(--soft); margin-top:2px; }
+.badge-mes { background:var(--blue); color:white; padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+.badge-status { padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+.rel-preview { font-size:13px; color:var(--soft); line-height:1.6; margin-bottom:10px; }
+.rel-footer { display:flex; flex-wrap:wrap; gap:14px; font-size:12px; font-weight:600; color:var(--soft); border-top:1px solid #EEF2FF; padding-top:10px; }
+.rel-data { margin-left:auto; font-size:11px; font-weight:400; color:#AAB8D0; }
+
+/* VAZIO */
+.empty { text-align:center; padding:48px 20px; color:var(--soft); font-size:14px; background:white; border-radius:14px; box-shadow:var(--shadow); }
+
+/* ─── MODAL ─── */
+#modal {
+  display:none; position:fixed; inset:0;
+  background:rgba(2,24,47,0.6); z-index:200;
+  align-items:flex-start; justify-content:center;
+  padding:20px 16px; overflow-y:auto;
+}
+.modal-box {
+  background:white; border-radius:20px; width:100%; max-width:780px;
+  margin:auto; box-shadow:0 8px 48px rgba(0,0,0,0.3);
+  animation:slideUp 0.2s ease;
+}
+@keyframes slideUp { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+
+.modal-hdr {
+  background:var(--blue-dark); border-radius:20px 20px 0 0;
+  padding:20px 24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+}
+.modal-title { color:white; }
+.modal-title h3 { font-family:'Merriweather',serif; font-size:16px; font-weight:700; }
+.modal-title p { font-size:12px; color:#7EB8FF; margin-top:2px; }
+.modal-hdr-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.modal-status-sel {
+  padding:7px 12px; border:none; border-radius:8px;
+  font-family:'Montserrat',sans-serif; font-size:12px; font-weight:600;
+  background:rgba(255,255,255,0.15); color:white; cursor:pointer; outline:none;
+}
+.modal-status-sel option { background:white; color:var(--text); }
+.btn-modal { padding:7px 14px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:12px; font-weight:700; cursor:pointer; border:none; transition:0.15s; }
+.btn-salvar-st { background:var(--green); color:white; }
+.btn-salvar-st:hover { background:var(--green-dark); }
+.btn-excluir { background:rgba(192,57,43,0.8); color:white; }
+.btn-excluir:hover { background:var(--red); }
+.btn-fechar { background:rgba(255,255,255,0.15); color:white; }
+.btn-fechar:hover { background:rgba(255,255,255,0.25); }
+
+/* TABS */
+.modal-tabs { display:flex; border-bottom:2px solid #EEF2FF; padding:0 24px; background:var(--off); }
+.tab-btn {
+  padding:12px 18px; font-size:13px; font-weight:600;
+  color:var(--soft); border:none; background:transparent;
+  cursor:pointer; border-bottom:3px solid transparent;
+  margin-bottom:-2px; transition:0.15s; font-family:'Montserrat',sans-serif;
+}
+.tab-btn:hover { color:var(--blue); }
+.tab-btn.active { color:var(--blue); border-bottom-color:var(--blue); }
+
+.tab-pane { display:none; padding:24px; max-height:70vh; overflow-y:auto; }
+.tab-pane.active { display:block; }
+
+/* CAMPOS BRUTOS */
+.campos-brutos { display:flex; flex-direction:column; gap:14px; }
+.campo-bruto { background:var(--off); border-radius:10px; padding:12px 14px; border-left:3px solid var(--border); }
+.cb-label { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--soft); margin-bottom:6px; }
+.cb-val { font-size:14px; color:var(--text); line-height:1.7; white-space:pre-wrap; }
+
+/* FOTOS */
+.fotos-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
+.foto-item { border-radius:10px; overflow:hidden; display:block; position:relative; aspect-ratio:1; background:var(--off); border:2px solid var(--border); transition:0.15s; }
+.foto-item:hover { transform:scale(1.03); }
+.foto-item img { width:100%; height:100%; object-fit:cover; }
+.foto-num { position:absolute; bottom:0; left:0; right:0; background:rgba(2,24,47,0.65); color:white; font-size:10px; font-weight:700; text-align:center; padding:4px; }
+
+/* IA */
+.ai-placeholder { text-align:center; padding:40px 20px; color:var(--soft); }
+.ai-placeholder p { font-size:14px; margin-bottom:20px; line-height:1.6; }
+.btn-gerar-ia {
+  background:linear-gradient(135deg, #6C3483, var(--blue));
+  color:white; border:none; padding:14px 32px; border-radius:10px;
+  font-size:14px; font-weight:700; font-family:'Montserrat',sans-serif;
+  cursor:pointer; box-shadow:0 4px 18px rgba(108,52,131,0.3);
+  transition:all 0.2s;
+}
+.btn-gerar-ia:hover { transform:translateY(-2px); }
+.ai-loading { display:flex; align-items:center; gap:14px; padding:32px; color:var(--blue); font-size:14px; font-weight:600; }
+.spinner { width:24px; height:24px; border:3px solid #C8D8F0; border-top-color:var(--blue); border-radius:50%; animation:spin 0.7s linear infinite; }
+.ai-text-ready {
+  background:var(--off); border-radius:10px; padding:18px;
+  font-family:'Merriweather',serif; font-size:13px; line-height:1.9;
+  color:var(--text); border-left:4px solid var(--blue);
+  white-space:pre-wrap;
+}
+.ai-actions-bar { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+.btn-ai-copy { background:var(--off); border:1.5px solid var(--border); color:var(--text); padding:9px 16px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; font-weight:700; cursor:pointer; }
+.btn-ai-pdf { background:var(--red); color:white; border:none; padding:9px 16px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:13px; font-weight:700; cursor:pointer; }
+.btn-ai-regen { background:var(--off); border:1.5px solid var(--border); color:var(--soft); padding:9px 14px; border-radius:8px; font-family:'Montserrat',sans-serif; font-size:12px; cursor:pointer; }
+
+/* TOAST */
+#toast {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px);
+  background:var(--blue-dark); color:white; padding:12px 24px;
+  border-radius:99px; font-size:13px; font-weight:700;
+  box-shadow:var(--shadow-lg); transition:transform 0.3s; z-index:999;
+  pointer-events:none;
+}
+#toast.show { transform:translateX(-50%) translateY(0); }
+
+@media(max-width:600px) {
+  .modal-box { border-radius:14px; }
+  .tab-btn { padding:10px 12px; font-size:12px; }
+  .dash-body { padding:16px 12px 60px; }
+  .modal-hdr { padding:16px; }
+  .tab-pane { padding:16px; }
+}
+</style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading">
+  <div class="spinner-lg"></div>
+  <span style="color:white;font-size:14px;font-weight:600;">Carregando relatórios...</span>
+</div>
+
+<!-- TOAST -->
+<div id="toast">Salvo!</div>
+
+<!-- ─── LOGIN ─── -->
+<div id="login-screen">
+  <div class="login-box">
+    <span class="login-logo">🌍</span>
+    <h1>Dashboard Missionário</h1>
+    <p>Acesso exclusivo para a equipe de comunicação da Nossa Agência Missionária.</p>
+
+    <div id="login-erro"></div>
+
+    <div class="login-field">
+      <label for="l-email">E-mail da equipe</label>
+      <input type="email" id="l-email" placeholder="secretaria@nossaagencia.com.br" autocomplete="email">
+    </div>
+    <div class="login-field">
+      <label for="l-senha">Senha</label>
+      <input type="password" id="l-senha" placeholder="Sua senha segura" autocomplete="current-password">
+    </div>
+
+    <button class="btn-login" id="btn-login" onclick="window._login()">Entrar no Dashboard</button>
+
+    <div class="login-extra">
+      <a onclick="window._esqueceuSenha()">Esqueci minha senha</a>
+      <span style="color:#AAB8D0;">Acesso restrito</span>
+    </div>
+
+    <div class="login-aviso">
+      🔒 Para solicitar acesso, entre em contato com o administrador do sistema. Não é possível criar conta automaticamente.
+    </div>
+  </div>
+</div>
+
+<!-- ─── DASHBOARD ─── -->
+<div id="dash" style="display:none;">
+
+  <div class="topbar">
+    <div class="topbar-logo">
+      <div class="topbar-logo-icon">⭐</div>
+      Nossa Agência Missionária — Relatórios
+    </div>
+    <div class="topbar-user">
+      <span class="topbar-email" id="user-email"></span>
+      <button class="btn-logout" onclick="window._logout()">Sair</button>
+    </div>
+  </div>
+
+  <div class="dash-body">
+
+    <!-- STATS -->
+    <div class="stats-grid">
+      <div class="stat-card blue">
+        <div class="stat-lbl">Total de Relatórios</div>
+        <div class="stat-val" id="st-total">0</div>
+      </div>
+      <div class="stat-card orange">
+        <div class="stat-lbl">Aguardando Revisão</div>
+        <div class="stat-val" id="st-pendentes">0</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-lbl">Aprovados / Enviados</div>
+        <div class="stat-val" id="st-aprovados">0</div>
+      </div>
+      <div class="stat-card red">
+        <div class="stat-lbl">Campos Faltando</div>
+        <div class="stat-val" id="st-faltando">—</div>
+      </div>
+      <div class="stat-card purple">
+        <div class="stat-lbl">Batismos no Período</div>
+        <div class="stat-val" id="st-batismos">0</div>
+      </div>
+      <div class="stat-card green">
+        <div class="stat-lbl">Pessoas Alcançadas</div>
+        <div class="stat-val" id="st-alcancadas">0</div>
+      </div>
+    </div>
+
+    <!-- CAMPOS FALTANDO -->
+    <div id="faltando-wrap" style="display:none;"></div>
+
+    <!-- FILTROS -->
+    <div class="filtros">
+      <span class="filtros-label">Filtrar:</span>
+      <select class="f-sel" id="f-mes">
+        <option value="">Todos os meses</option>
+        <option>Janeiro</option><option>Fevereiro</option><option>Março</option>
+        <option>Abril</option><option>Maio</option><option>Junho</option>
+        <option>Julho</option><option>Agosto</option><option>Setembro</option>
+        <option>Outubro</option><option>Novembro</option><option>Dezembro</option>
+      </select>
+      <select class="f-sel" id="f-ano" style="max-width:100px;">
+        <option value="">Ano</option>
+        <option>2025</option><option>2026</option><option>2027</option>
+      </select>
+      <select class="f-sel" id="f-status">
+        <option value="">Todos os status</option>
+        <option value="pendente_revisao">Aguardando revisão</option>
+        <option value="em_edicao">Em edição</option>
+        <option value="aprovado">Aprovado</option>
+        <option value="enviado">Enviado</option>
+      </select>
+      <input class="f-search" id="f-busca" placeholder="Buscar campo ou missionário..." oninput="aplicarFiltro()">
+      <button class="btn-filtrar" onclick="aplicarFiltro()">Filtrar</button>
+      <button class="btn-limpar" onclick="limparFiltro()">Limpar</button>
+      <button class="btn-reload" onclick="recarregar()" title="Recarregar">🔄</button>
+    </div>
+
+    <!-- LISTA -->
+    <div id="lista-relatorios">
+      <div class="empty"><p>Carregando relatórios...</p></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── MODAL ─── -->
+<div id="modal" onclick="if(event.target===this)fecharModal()">
+  <div class="modal-box">
+
+    <div class="modal-hdr">
+      <div class="modal-title">
+        <h3 id="modal-nome">—</h3>
+        <p id="modal-mesref">—</p>
+      </div>
+      <div class="modal-hdr-actions">
+        <select class="modal-status-sel" id="modal-status-sel">
+          <option value="pendente_revisao">⏳ Aguardando revisão</option>
+          <option value="em_edicao">✏️ Em edição</option>
+          <option value="aprovado">✅ Aprovado</option>
+          <option value="enviado">📤 Enviado</option>
+        </select>
+        <button class="btn-modal btn-salvar-st" onclick="atualizarStatus()">Salvar</button>
+        <button class="btn-modal btn-excluir" onclick="excluirRelatorio()">🗑 Excluir</button>
+        <button class="btn-modal btn-fechar" onclick="fecharModal()">✕ Fechar</button>
+      </div>
+    </div>
+
+    <div class="modal-tabs">
+      <button class="tab-btn active" id="tbtn-bruto" onclick="switchTab('bruto')">📋 Respostas Originais</button>
+      <button class="tab-btn" id="tbtn-fotos" onclick="switchTab('fotos')"><span id="tab-fotos-btn">📷 Fotos</span></button>
+      <button class="tab-btn" id="tbtn-ia" onclick="switchTab('ia')">✨ Relatório Editado</button>
+    </div>
+
+    <div class="tab-pane active" id="tab-bruto"></div>
+    <div class="tab-pane" id="tab-fotos"></div>
+    <div class="tab-pane" id="tab-ia"></div>
+
+  </div>
+</div>
+
+</body>
+</html>
